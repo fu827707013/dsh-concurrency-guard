@@ -1,0 +1,2 @@
+# 统一换行符：入库一律 LF（Windows 检出不转 CRLF）
+* text=auto eol=lf
