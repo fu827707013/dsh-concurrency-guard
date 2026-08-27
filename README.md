@@ -12,6 +12,13 @@ DSH（DeepSeek Harness）并发请求监控与门闩插件。已发布 npm：`np
 自带 **WebUI 实时面板**（会话视图「并发监控」页签）、HTTP JSON 端点、落盘状态文件
 与 `concurrency_status` 工具。
 
+## 效果预览
+
+![并发监控面板](img/demo.png)
+
+会话视图「并发监控」页签：仪表卡 + 并发水位条 + 在途请求（含来源分类）/ 会话活跃
+/ 分模型 / 最近完成（含历史清理）等一览无余。
+
 ## 特性
 
 - 🔎 **口径完整**：挂在 `llm/stream` 瀑布（所有模型调用的唯一入口），不存在旁路；
@@ -168,6 +175,19 @@ dsh-llm 不可解析时自动降级为纯 sessionId 启发式。
   状态文件按 `pid` 区分实例。
 - 浏览器侧直连提供商的通道不经宿主 `llm/stream`（本环境无此通道，不受影响）。
 
+## 插件商店收录
+
+已收录于 [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)
+目录（条目文件 `data/plugins/fu827707013__dsh-concurrency-guard.yml`），
+可在 [插件市场](https://github.com/dsh-market/dsh-market) 与
+[awesome-dsh-plugin.com](https://awesome-dsh-plugin.com) 检索到。
+
+- 截图：本仓库根 `screenshots.json` 声明（`img/demo.png`），推仓库即自动更新，无需再提 PR
+- 更新条目（描述/分类）：改 `data/plugins/fu827707013__dsh-concurrency-guard.yml`
+  后重新生成 READMEs（`npm ci && node scripts/generate-readme.mjs`）再提 PR
+- 提交门槛（CI 自动检查）：仓库创建 ≥ 1 天、提交数 ≥ 10、声明 `dsh.bundle`、
+  描述与实际功能一致
+
 ## License
 
-MIT（见 [LICENSE](./LICENSE)）。# dsh-concurrency-guard
+MIT（见 [LICENSE](./LICENSE)）。
