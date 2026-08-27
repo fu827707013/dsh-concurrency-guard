@@ -1,6 +1,8 @@
 # dsh-concurrency-guard
 
-DSH（DeepSeek Harness）并发请求监控与门闩插件。
+[![npm version](https://img.shields.io/npm/v/dsh-concurrency-guard?color=green)](https://www.npmjs.com/package/dsh-concurrency-guard)
+
+DSH（DeepSeek Harness）并发请求监控与门闩插件。已发布 npm：`npm i dsh-concurrency-guard`。
 
 挂钩 DSH 唯一的模型请求总线 `llm/stream` 瀑布，统计**全部**在途模型请求（主会话、
 进程内子代理、workflow 派生代理、会话标题、压缩、以及任何调用 `ctx.llm.stream` 的
@@ -31,22 +33,30 @@ DSH（DeepSeek Harness）并发请求监控与门闩插件。
 
 ## 安装
 
-本机（已装 `dsh-super-injector` 提供 `dev_*` 工具）：
+已发布 npm，推荐直接安装（目标 DSH profile）：
 
 ```text
-git clone <本仓库> D:\Company\dsh-plugin
-dev_inject_plugin D:\Company\dsh-plugin\dsh-concurrency-guard
+cd <profile 目录>          # 例：C:\Users\pc\.dsh\profiles\web
+npm i dsh-concurrency-guard
 ```
 
-其它机器：
+**关键装配步骤（漏做则不加载）**：编辑该 profile 的 `package.json`，把包名加入
+`dsh.profile.bundles` 数组：
+
+```jsonc
+"dsh": { "profile": { "bundles": [ /*...已有的...*/, "dsh-concurrency-guard" ] } }
+```
+
+然后**重启 dsh**、刷新 WebUI → 会话视图顶部出现「并发监控」页签。
+（`dependencies` 只是"装好"；`bundles` 决定启动时装配；client 行启动时自动注册，
+无需手动改 patch。）
+
+源码安装（本机开发 / 调试）：
 
 ```text
-# 方式 A：克隆仓库后直接注入
-git clone <本仓库> && dev_inject_plugin <克隆目录>/dsh-concurrency-guard
-
-# 方式 B：npm 打包安装（插件目录内 npm pack 产出 tgz）
-npm pack
-npm i dsh-concurrency-guard-<ver>.tgz -w <目标 profile>
+git clone https://github.com/fu827707013/dsh-concurrency-guard.git
+dev_inject_plugin <克隆目录>           # 本机装过 dsh-super-injector 时直接热注入
+# 或：cd <profile 目录> && npm i <克隆目录>，再按上面的装配步骤启用
 ```
 
 > ⚠️ 首次安装（含修改 `package.json` 的 `dsh.client`/`exports`）后需**重启 dsh 宿主**
@@ -110,6 +120,7 @@ lib/config.js 配置解析（env/config/运行时）
 ```text
 npm test                  # 离线门闩测试（不依赖真实 DSH；mock cordis ctx）
 dev_reload_package dsh-concurrency-guard   # host 热重载（改宿主代码后）
+npm publish --registry https://registry.npmjs.org   # 发布新版（开 2FA 时加 --otp <6位验证码>）
 # 改 WebUI 面板：直接改 lib/client.js 后刷新页面即可（bundle 按 rev 缓存，重载 host 联动 rev）
 ```
 
