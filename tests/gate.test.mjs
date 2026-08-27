@@ -8,8 +8,14 @@
  *
  * 运行：node tests/gate.test.mjs（或 npm test）
  */
-import { readFileSync, rmSync } from "node:fs";
+import { readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { apply } from "../lib/index.js";
+
+// 预清理：无论 cwd 在哪，都清掉上次运行可能残留的 test-state-*.json，
+// 避免启动接续（adoption）把旧计数（如 failOpen）带进本次运行。
+for (const f of readdirSync(".")) {
+  if (/^test-state-\d+\.json$/.test(f)) rmSync(f, { force: true });
+}
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -351,6 +357,64 @@ function rmState(...paths) { for (const p of paths) { try { rmSync(p, { force: t
   await collect(waterfall(ctx2, { provider: "p", model: "c", sessionId: "session-C" }));
   const s2 = await waitState(file, (s) => s.stats?.today?.started === 3, 3000, "场景10 s2");
   check("场景10: 重启后累计到 3 且异常分类保留", s2.stats.today.started === 3 && s2.stats.totals.byErrKind?.rate_limit === 1, `started=${s2.stats.today.started} errKinds=${JSON.stringify(s2.stats.totals.byErrKind)}`);
+  rmState(file);
+}
+
+// ---------- 场景 11：消费端提前弃流 → interrupted ----------
+{
+  console.log("\n== 场景11: 消费端提前弃流 ==");
+  const file = "test-state-11.json";
+  rmState(file);
+  const ctx = makeCtx();
+  apply(ctx, { maxConcurrency: 5, mode: "queue", history: 10, historyTtlMs: 0, maxStreamStallMs: 60_000, stateFile: file });
+  const hold = makeHold();
+  const stream = waterfall(ctx, { provider: "p", model: "a", sessionId: "session-E" }, hold.gate);
+  const iter = stream[Symbol.asyncIterator]();
+  await sleep(80);           // wrapper 已挂在内层 await hold
+  hold.release();            // 内层恢复（yield finish chunk）
+  await iter.next();         // 拿到第一块 → streaming
+  await iter.return();       // 消费端在流结束前主动放弃 → 回合中断
+  const s = await waitState(file, (st) => (st.stats?.today?.interrupted ?? 0) === 1, 3000, "场景11");
+  check("场景11: 提前弃流记为 interrupted=1", s.stats.today.interrupted === 1, JSON.stringify(s.stats.today));
+  check("场景11: 未计入 ok/cancelled", s.stats.today.completed === 0 && s.stats.today.cancelled === 0, `c=${s.stats.today.completed} x=${s.stats.today.cancelled}`);
+  rmState(file);
+}
+
+// ---------- 场景 12：停滞流 sweep 兜底 → interrupted ----------
+{
+  console.log("\n== 场景12: 停滞流 sweep ==");
+  const file = "test-state-12.json";
+  rmState(file);
+  const ctx = makeCtx();
+  apply(ctx, { maxConcurrency: 5, mode: "queue", history: 10, historyTtlMs: 0, maxStreamStallMs: 300, sweepIntervalMs: 200, stateFile: file });
+  const hold = makeHold();
+  const stream = waterfall(ctx, { provider: "p", model: "b", sessionId: "session-S" }, hold.gate);
+  const iter = stream[Symbol.asyncIterator]();
+  await sleep(80);
+  hold.release();
+  await iter.next();         // 拿到一块后【不再消费、也不 return】——模拟消费端死亡/弃流
+  const s = await waitState(file, (st) => (st.stats?.today?.interrupted ?? 0) >= 1, 4000, "场景12");
+  check("场景12: 无活动超阈值被 sweep 记为 interrupted=1", s.stats.today.interrupted === 1, JSON.stringify(s.stats.today));
+  rmState(file);
+}
+
+// ---------- 场景 13：启动遗留对账（上次异常退出留下的在途记录 → interrupted） ----------
+{
+  console.log("\n== 场景13: 启动遗留对账 ==");
+  const file = "test-state-13.json";
+  rmState(file);
+  writeFileSync(file, JSON.stringify({
+    activeRequests: [
+      { phase: "streaming", provider: "p", model: "x" },
+      { phase: "waiting", provider: "p", model: "y" }
+    ]
+  }));
+  const ctx = makeCtx();
+  apply(ctx, { maxConcurrency: 5, mode: "queue", history: 10, historyTtlMs: 0, stateFile: file });
+  const svc = ctx.provided.concurrencyGuard;
+  const s = svc.status(true);
+  check("场景13: 遗留 2 个在途 → interrupted=2", s.stats.today.interrupted === 2, JSON.stringify(s.stats.today));
+  check("场景13: 内存计数同步", s.counters.interrupted === 2, `counter=${s.counters.interrupted}`);
   rmState(file);
 }
 
