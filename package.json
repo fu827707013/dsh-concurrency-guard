@@ -1,6 +1,6 @@
 {
   "name": "dsh-concurrency-guard",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "description": "DSH 并发请求监控与门闩：挂钩 llm/stream 瀑布，统计全部在途模型请求并按来源分类（主会话/子代理/插件/压缩/标题）与会话活跃聚合，达到上限 FIFO 排队，防止并发超限被供应商锁号；提供 WebUI 实时面板（含历史清理）、HTTP JSON 端点、状态文件与 concurrency_status 工具。",
   "keywords": [
     "deepseek-harness",
@@ -25,6 +25,7 @@
   },
   "files": [
     "lib",
+    "cordis.patch.yml",
     "README.md",
     "LICENSE"
   ],
@@ -39,6 +40,9 @@
     "access": "public"
   },
   "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
     "client": {
       "inject": [
         "@deepseek-ai/dsh-client-runtime",
