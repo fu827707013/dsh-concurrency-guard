@@ -32,6 +32,9 @@ DSH（DeepSeek Harness）并发请求监控与门闩插件。已发布 npm：`np
   瞬时超限也不卡死请求）。
 - 🧹 **历史自动清理**：最近完成记录双保险——条数上限（`history`，默认 30）+
   时间 TTL（`historyTtlMs`，默认 1h，超龄自动清理）；面板「🗑 清历史」一键清空。
+- 📈 **持久化统计**：按天汇总（请求/完成/异常/取消/门闩/fail-open）+ **异常分类聚合**
+  （限流/超时/网络/中断/鉴权/上游/其他）+ 来源分布；随状态文件落盘，
+  **重启不丢**——面板「今日统计」与「每日历史」跨进程连续累计。
 - 🖥️ **WebUI 面板**：仪表卡 + 并发水位条 + 在途/分模型/分供应商/最近完成表；
   可一键热切「排队节制 ⇄ 仅监控」、调整并发上限、暂停轮询、清空历史。
 - 📦 **零构建链、零依赖**：纯 node 内建 + cordis API 实现，手写 `__ModuleLoader__`
@@ -134,6 +137,7 @@ lib/index.js  入口：llm/stream 瀑布监听  conversation.view 槽 →「并�
 lib/gate.js   FIFO 信号量：转移/abort/   模式切换 + 上限调节 → POST /config
               fail-open（定时器清理）    页面隐藏自动暂停轮询
 lib/records.js 记录生命周期 + 快照组装（含 byKind/bySession / 历史 TTL 清理）
+lib/stats.js  持久化统计：按天汇总 + 异常分类（重启读回接续）
 lib/classify.js 请求来源分类（main/subagent/plugin/compaction/session-title）
 lib/persist.js 状态文件 250ms 防抖写（写盘前顺带 TTL 清理）
 lib/api.js    服务 + HTTP 端点（/status /config /history）+ 工具
@@ -150,7 +154,8 @@ npm publish --registry https://registry.npmjs.org   # 发布新版（开 2FA 时
 ```
 
 测试覆盖：FIFO 排队与位子转移 / monitor 模式 / 排队中 abort / fail-open 无二次触发 /
-`configure` 热改 / `reset` 清零 / 来源分类 / 历史清空与 TTL / 会话活跃聚合。
+`configure` 热改 / `reset` 清零 / 来源分类 / 历史清空与 TTL / 会话活跃聚合 /
+持久化统计（跨重启接续 + 异常分类计数）。
 
 ## 监控范围（谁会被统计）
 

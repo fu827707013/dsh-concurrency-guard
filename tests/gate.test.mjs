@@ -61,6 +61,14 @@ const collect = async (stream) => {
   return out;
 };
 
+/** 复刻 waterfall 但内层流直接抛错（模拟供应商侧错误返回）。 */
+function waterfallErr(ctx, options, message = "rate limit: 429 Too Many Requests") {
+  const listeners = [...(ctx._hooks.get("llm/stream") ?? [])];
+  const inner = () => (async function* () { throw new Error(message); })();
+  const next = () => (listeners.shift() ?? inner)(options, next);
+  return next();
+}
+
 let failures = 0;
 function check(label, cond, detail = "") {
   console.log(`${cond ? "PASS" : "FAIL"}  ${label}${detail ? `  (${detail})` : ""}`);
@@ -315,6 +323,35 @@ function rmState(...paths) { for (const p of paths) { try { rmSync(p, { force: t
   holdC.release();
   await cDone;
   rmState("test-state-9.json");
+}
+
+// ---------- 场景 10：持久化统计（跨重启接续 + 异常分类） ----------
+{
+  console.log("\n== 场景10: 持久化统计（重启接续 + 异常分类） ==");
+  const file = "test-state-10.json";
+  rmState(file);
+  // 第一次"进程"
+  const ctx1 = makeCtx();
+  apply(ctx1, { maxConcurrency: 5, mode: "queue", history: 10, historyTtlMs: 0, stateFile: file });
+  await collect(waterfall(ctx1, { provider: "p", model: "a", sessionId: "session-A" }));
+  await collect(waterfallErr(ctx1, { provider: "p", model: "b", sessionId: "session-B" })).catch(() => {});
+  const s1 = await waitState(file, (s) => s.stats?.today?.errored === 1, 3000, "场景10 s1");
+  check("场景10: 今日 started=2", s1.stats.today.started === 2, `started=${s1.stats.today.started}`);
+  check("场景10: 今日 completed=1 errored=1", s1.stats.today.completed === 1 && s1.stats.today.errored === 1, `c=${s1.stats.today.completed} e=${s1.stats.today.errored}`);
+  check("场景10: 异常分类 rate_limit=1", s1.stats.today.byErrKind?.rate_limit === 1, JSON.stringify(s1.stats.today.byErrKind));
+  check("场景10: 来源 byKind.main=2", s1.stats.today.byKind?.main === 2, JSON.stringify(s1.stats.today.byKind));
+  // 第二次"进程"（模拟重启）：从 state.json 读回统计并接续计数器
+  const ctx2 = makeCtx();
+  apply(ctx2, { maxConcurrency: 5, mode: "queue", history: 10, historyTtlMs: 0, stateFile: file });
+  const svc2 = ctx2.provided.concurrencyGuard;
+  const adopted = svc2.status(true);
+  check("场景10: 重启后 stats.today 接续（started=2）", adopted.stats.today.started === 2, `started=${adopted.stats.today.started}`);
+  check("场景10: 重启后内存计数接续（started=2）", adopted.counters.started === 2, `counter=${adopted.counters.started}`);
+  // 重启后再来一笔 → 3
+  await collect(waterfall(ctx2, { provider: "p", model: "c", sessionId: "session-C" }));
+  const s2 = await waitState(file, (s) => s.stats?.today?.started === 3, 3000, "场景10 s2");
+  check("场景10: 重启后累计到 3 且异常分类保留", s2.stats.today.started === 3 && s2.stats.totals.byErrKind?.rate_limit === 1, `started=${s2.stats.today.started} errKinds=${JSON.stringify(s2.stats.totals.byErrKind)}`);
+  rmState(file);
 }
 
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURES`);
