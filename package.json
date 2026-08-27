@@ -13,6 +13,14 @@
   ],
   "license": "MIT",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/fu827707013/dsh-concurrency-guard.git"
+  },
+  "homepage": "https://github.com/fu827707013/dsh-concurrency-guard",
+  "bugs": {
+    "url": "https://github.com/fu827707013/dsh-concurrency-guard/issues"
+  },
   "main": "./lib/index.js",
   "exports": {
     ".": {
