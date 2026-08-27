@@ -290,5 +290,32 @@ function rmState(...paths) { for (const p of paths) { try { rmSync(p, { force: t
   rmState("test-state-8.json");
 }
 
+// ---------- 场景 9：会话活跃聚合（bySession） ----------
+{
+  console.log("\n== 场景9: 会话活跃聚合 ==");
+  const ctx = makeCtx();
+  apply(ctx, { maxConcurrency: 5, mode: "queue", history: 100, historyTtlMs: 0, stateFile: "test-state-9.json" });
+  const svc = ctx.provided.concurrencyGuard;
+  // A 两笔完成；B 一笔完成；C 在途（hold 挂起）
+  const a1 = collect(waterfall(ctx, { provider: "p", model: "a", sessionId: "session-A" }));
+  const a2 = collect(waterfall(ctx, { provider: "p", model: "b", sessionId: "session-A" }));
+  await Promise.all([a1, a2]);
+  const b = collect(waterfall(ctx, { provider: "p", model: "c", sessionId: "agent-123" }));
+  await b;
+  const holdC = makeHold();
+  const cDone = collect(waterfall(ctx, { provider: "p", model: "d", sessionId: "session-C" }, holdC.gate));
+  await waitState("test-state-9.json", (s) => s.counters.completed === 3, 3000, "场景9 mid");
+  await sleep(100); // 让 C 进入 streaming（消费端已拉流，挂在 hold 上）
+  const snap = svc.status(true);
+  const sess = Object.fromEntries(snap.bySession.map((s) => [s.sessionId, s]));
+  check("场景9: A 两笔完成 → recentCount=2 且 lastEndMs>0", sess["session-A"]?.recentCount === 2 && sess["session-A"].lastEndMs > 0, JSON.stringify(snap.bySession));
+  check("场景9: B 一笔完成 → recentCount=1", sess["agent-123"]?.recentCount === 1, `rc=${sess["agent-123"]?.recentCount}`);
+  check("场景9: C 在途 → active=1", sess["session-C"]?.active === 1, `active=${sess["session-C"]?.active}`);
+  check("场景9: 排序在途优先（C 排第一）", snap.bySession[0].sessionId === "session-C", `first=${snap.bySession[0].sessionId}`);
+  holdC.release();
+  await cDone;
+  rmState("test-state-9.json");
+}
+
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURES`);
 process.exit(failures === 0 ? 0 : 1);

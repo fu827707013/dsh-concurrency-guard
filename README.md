@@ -16,6 +16,8 @@ DSH（DeepSeek Harness）并发请求监控与门闩插件。
   每条请求带 `provider/model`、`sessionId`、用途（对话/压缩/标题），可精确归属。
 - 🏷️ **来源分类**：在途/历史请求按来源标记——**主会话 / 子代理 / 插件 / 压缩 / 标题**
   （agent loop 标记 + sessionId 形状判别，面板有「来源」列与分类概览）。
+- 👥 **会话活跃**：按会话聚合在途/排队/最近开始/近 60s 完成数——模型请求间隙
+  （跑工具等）在途为 0 时，也能一眼看出"某个会话还在不在推进"（面板「会话活跃」表）。
 - 🚦 **FIFO 门闩**：默认 `mode=queue, maxConcurrency=5`——并发满员后新请求排队，
   并发**永不超限**；排队中被取消立即出队；排队超时 **fail-open** 强制放行（宁可
   瞬时超限也不卡死请求）。
@@ -96,7 +98,7 @@ lib/index.js  入口：llm/stream 瀑布监听  conversation.view 槽 →「并�
               finish() 收尾（幂等）      仪表卡/水位条/三张表
 lib/gate.js   FIFO 信号量：转移/abort/   模式切换 + 上限调节 → POST /config
               fail-open（定时器清理）    页面隐藏自动暂停轮询
-lib/records.js 记录生命周期 + 快照组装（含 byKind / 历史 TTL 清理）
+lib/records.js 记录生命周期 + 快照组装（含 byKind/bySession / 历史 TTL 清理）
 lib/classify.js 请求来源分类（main/subagent/plugin/compaction/session-title）
 lib/persist.js 状态文件 250ms 防抖写（写盘前顺带 TTL 清理）
 lib/api.js    服务 + HTTP 端点（/status /config /history）+ 工具
@@ -112,7 +114,7 @@ dev_reload_package dsh-concurrency-guard   # host 热重载（改宿主代码后
 ```
 
 测试覆盖：FIFO 排队与位子转移 / monitor 模式 / 排队中 abort / fail-open 无二次触发 /
-`configure` 热改 / `reset` 清零 / 来源分类 / 历史清空与 TTL。
+`configure` 热改 / `reset` 清零 / 来源分类 / 历史清空与 TTL / 会话活跃聚合。
 
 ## 监控范围（谁会被统计）
 
