@@ -33,31 +33,61 @@ DSH（DeepSeek Harness）并发请求监控与门闩插件。已发布 npm：`np
 
 ## 安装
 
-已发布 npm，推荐直接安装（目标 DSH profile）：
+DSH 的插件装在 **profile** 里：每个 profile 是一个独立的 npm 项目目录
+（默认 `~/.dsh/profiles/<profile名>`，本机示例 `C:\Users\pc\.dsh\profiles\web`），
+装进哪个 profile，哪个 WebUI/会话就用上它。
+
+### 方式 1：npm 安装（推荐，已发布到官方源）
 
 ```text
-cd <profile 目录>          # 例：C:\Users\pc\.dsh\profiles\web
+# ① 进入目标 profile 目录安装（自动写入其 dependencies + node_modules）
+cd ~/.dsh/profiles/web
 npm i dsh-concurrency-guard
 ```
 
-**关键装配步骤（漏做则不加载）**：编辑该 profile 的 `package.json`，把包名加入
-`dsh.profile.bundles` 数组：
-
 ```jsonc
-"dsh": { "profile": { "bundles": [ /*...已有的...*/, "dsh-concurrency-guard" ] } }
+// ② 启用装配：编辑同目录的 package.json，在 dsh.profile.bundles 数组里加包名
+//    （dependencies 只负责"装好"；bundles 决定启动时加载哪些插件——漏做不加载）
+{
+  "name": "dsh-profile-web",
+  "dependencies": {
+    /* ...npm i 已自动写入 dsh-concurrency-guard... */
+  },
+  "dsh": {
+    "profile": {
+      "bundles": [
+        "@deepseek-ai/dsh-base",
+        "dsh-mnemon",
+        "dsh-concurrency-guard"   // ← 加这一行
+      ]
+    }
+  }
+}
 ```
 
-然后**重启 dsh**、刷新 WebUI → 会话视图顶部出现「并发监控」页签。
-（`dependencies` 只是"装好"；`bundles` 决定启动时装配；client 行启动时自动注册，
-无需手动改 patch。）
+```text
+# ③ 重启 dsh 宿主 → 刷新 WebUI
+# 验证是否生效（三选一）：
+#   - 会话视图顶部出现「并发监控」页签
+#   - GET http://127.0.0.1:3080/api/concurrency-guard/status 返回 200
+#   - 宿主日志出现 [concurrency-guard] 已启动
+```
 
-源码安装（本机开发 / 调试）：
+```text
+# 卸载：cd ~/.dsh/profiles/web && npm uninstall dsh-concurrency-guard
+#       再把 bundles 数组里那一行删掉，重启
+```
+
+### 方式 2：git clone + dev_inject_plugin（本机开发 / 调试）
 
 ```text
 git clone https://github.com/fu827707013/dsh-concurrency-guard.git
-dev_inject_plugin <克隆目录>           # 本机装过 dsh-super-injector 时直接热注入
-# 或：cd <profile 目录> && npm i <克隆目录>，再按上面的装配步骤启用
+dev_inject_plugin <克隆目录>           # 需本机装有 dsh-super-injector，热注入免重启
+# 或：cd ~/.dsh/profiles/web && npm i <克隆目录>，再按方式 1 的 ②③ 启用
 ```
+
+（注意：`dev_reload_package` 只对方式 2 的源码链接生效；npm 装的副本改代码后需
+重装并重启。）
 
 > ⚠️ 首次安装（含修改 `package.json` 的 `dsh.client`/`exports`）后需**重启 dsh 宿主**
 > 使 client 行生效（Node 进程级缓存 package 元数据），重启后刷新 WebUI 即出现
