@@ -444,46 +444,63 @@ function rmState(...paths) { for (const p of paths) { try { rmSync(p, { force: t
   rmState(file);
 }
 
-// ---------- 场景 15：异常明细聚合（errorDetails 按信息聚类 + 错误码 + 重启保留） ----------
+// ---------- 场景 15：异常明细聚合（errorDetails 按信息聚类 + 错误码 + 会话上下文 + 重启保留） ----------
 {
   console.log("\n== 场景15: 异常明细聚合 ==");
   const file = "test-state-15.json";
   rmState(file);
   const ctx = makeCtx();
   apply(ctx, { maxConcurrency: 5, mode: "queue", history: 10, historyTtlMs: 0, stateFile: file });
-  const emitErr = async (msg, code) => {
+  const emitErr = async (msg, code, sessionId) => {
     const listeners = [...(ctx._hooks.get("llm/stream") ?? [])];
     const innerErr = () => (async function* () {
       yield { type: "finish", reason: { kind: "error", failure: { message: msg, code } } };
     })();
-    const nextErr = () => (listeners.shift() ?? innerErr)({ provider: "p", model: "x" }, nextErr);
+    const nextErr = () => (listeners.shift() ?? innerErr)({ provider: "p", model: "x", sessionId }, nextErr);
     await collect(nextErr());
   };
-  // ① 两次 TRANSPORT（仅 URL 不同）→ 归一化后应合并为一条 count=2
-  await emitErr("DeepSeek API request to http://a.example/v1 failed", "TRANSPORT");
-  await emitErr("DeepSeek API request to http://b.example/v1 failed", "TRANSPORT");
-  // ② 一条上游错误 → 独立第二条
-  await emitErr("provider upstream 502 Bad Gateway", null);
-  const s1 = await waitState(file, (st) => st.stats?.totals?.errored === 3, 3000, "场景15 s1");
+  // ① 三次 TRANSPORT（URL 不同）：a/b 两会话各一次 + c 在会话-a 再来一次 → 合并 count=3，会话维度聚合
+  await emitErr("DeepSeek API request to http://a.example/v1 failed", "TRANSPORT", "session-aaa");
+  await emitErr("DeepSeek API request to http://b.example/v1 failed", "TRANSPORT", "session-bbb");
+  await emitErr("DeepSeek API request to http://c.example/v1 failed", "TRANSPORT", "session-aaa");
+  // ② 上游错误（会话-c）→ 独立条目
+  await emitErr("provider upstream 502 Bad Gateway", null, "session-ccc");
+  // ③ 无会话错误 → 归入 "(none)"
+  await emitErr("user aborted request", null, null);
+  const s1 = await waitState(file, (st) => st.stats?.totals?.errored === 5, 3000, "场景15 s1");
   const det = s1.stats.errorDetails ?? {};
   const keys = Object.keys(det);
-  check("场景15: 3 笔异常 → errored=3", s1.stats.totals.errored === 3, `e=${s1.stats.totals.errored}`);
-  check("场景15: 归一化后聚类为 2 条明细（URL 差异被抹平）", keys.length === 2, `keys=${keys.length} ${JSON.stringify(keys)}`);
+  check("场景15: 5 笔异常 → errored=5", s1.stats.totals.errored === 5, `e=${s1.stats.totals.errored}`);
+  check("场景15: 归一化后聚类为 3 条明细（URL 差异被抹平）", keys.length === 3, `keys=${keys.length} ${JSON.stringify(keys)}`);
   const net = keys.find((k) => k.includes("<url>"));
   const prov = keys.find((k) => k.includes("502"));
-  check("场景15: 不同 URL 的 TRANSPORT 合并 count=2 / kind=network / code=TRANSPORT",
-    net && det[net].count === 2 && det[net].kind === "network" && det[net].code === "TRANSPORT",
-    JSON.stringify(det));
-  check("场景15: provider 错误独立一条 count=1 / kind=provider", prov && det[prov].count === 1 && det[prov].kind === "provider", JSON.stringify(det));
-  check("场景15: byErrKind network=2 provider=1", s1.stats.totals.byErrKind?.network === 2 && s1.stats.totals.byErrKind?.provider === 1, JSON.stringify(s1.stats.totals.byErrKind));
-  // ③ 重启后明细跨进程保留
+  const abt = keys.find((k) => k.includes("abort"));
+  check("场景15: TRANSPORT 合并 count=3 / kind=network / code=TRANSPORT",
+    net && det[net].count === 3 && det[net].kind === "network" && det[net].code === "TRANSPORT",
+    JSON.stringify(det[net]));
+  check("场景15: TRANSPORT 的会话维度聚合（session-aaa×2 + session-bbb×1，最近=session-aaa）",
+    net && det[net].sessions?.["session-aaa"] === 2 && det[net].sessions?.["session-bbb"] === 1 &&
+      det[net].lastSessionId === "session-aaa" && det[net].lastModel === "x",
+    JSON.stringify(det[net]?.sessions));
+  check("场景15: provider 错误独立一条 count=1 / 会话 session-ccc",
+    prov && det[prov].count === 1 && det[prov].kind === "provider" && det[prov].sessions?.["session-ccc"] === 1,
+    JSON.stringify(det[prov]));
+  check("场景15: 无会话错误归入 (none) / lastSessionId=null",
+    abt && det[abt].sessions?.["(none)"] === 1 && det[abt].lastSessionId === null,
+    JSON.stringify(det[abt]));
+  check("场景15: byErrKind network=3 provider=1 aborted=1",
+    s1.stats.totals.byErrKind?.network === 3 && s1.stats.totals.byErrKind?.provider === 1 && s1.stats.totals.byErrKind?.aborted === 1,
+    JSON.stringify(s1.stats.totals.byErrKind));
+  // ④ 重启后明细跨进程保留（含会话上下文）
   const ctx2 = makeCtx();
   apply(ctx2, { maxConcurrency: 5, mode: "queue", history: 10, historyTtlMs: 0, stateFile: file });
   const svc2 = ctx2.provided.concurrencyGuard;
   const s2 = svc2.status(true);
   const det2 = s2.stats.errorDetails ?? {};
   const net2 = Object.values(det2).find((d) => d.kind === "network");
-  check("场景15: 重启后 errorDetails 保留（network count=2）", net2?.count === 2 && Object.keys(det2).length === 2, JSON.stringify(det2));
+  check("场景15: 重启后 errorDetails 保留（network count=3 + 会话聚合）",
+    net2?.count === 3 && net2?.sessions?.["session-aaa"] === 2 && Object.keys(det2).length === 3,
+    JSON.stringify(det2));
   rmState(file);
 }
 
