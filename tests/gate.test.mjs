@@ -486,14 +486,14 @@ function rmState(...paths) { for (const p of paths) { try { rmSync(p, { force: t
     prov && det[prov].status === 502 && det[prov].requestId === "req-502-x",
     JSON.stringify({ status: det[prov]?.status, requestId: det[prov]?.requestId }));
   check("场景15: TRANSPORT 的会话维度聚合（session-aaa×2 + session-bbb×1，最近=session-aaa）",
-    net && det[net].sessions?.["session-aaa"] === 2 && det[net].sessions?.["session-bbb"] === 1 &&
+    net && det[net].sessions?.["session-aaa"]?.count === 2 && det[net].sessions?.["session-bbb"]?.count === 1 &&
       det[net].lastSessionId === "session-aaa" && det[net].lastModel === "x",
     JSON.stringify(det[net]?.sessions));
   check("场景15: provider 错误独立一条 count=1 / 会话 session-ccc",
-    prov && det[prov].count === 1 && det[prov].kind === "provider" && det[prov].sessions?.["session-ccc"] === 1,
+    prov && det[prov].count === 1 && det[prov].kind === "provider" && det[prov].sessions?.["session-ccc"]?.count === 1,
     JSON.stringify(det[prov]));
   check("场景15: 无会话错误归入 (none) / lastSessionId=null",
-    abt && det[abt].sessions?.["(none)"] === 1 && det[abt].lastSessionId === null,
+    abt && det[abt].sessions?.["(none)"]?.count === 1 && det[abt].lastSessionId === null,
     JSON.stringify(det[abt]));
   check("场景15: byErrKind network=3 provider=1 aborted=1",
     s1.stats.totals.byErrKind?.network === 3 && s1.stats.totals.byErrKind?.provider === 1 && s1.stats.totals.byErrKind?.aborted === 1,
@@ -506,8 +506,64 @@ function rmState(...paths) { for (const p of paths) { try { rmSync(p, { force: t
   const det2 = s2.stats.errorDetails ?? {};
   const net2 = Object.values(det2).find((d) => d.kind === "network");
   check("场景15: 重启后 errorDetails 保留（network count=3 + 会话聚合）",
-    net2?.count === 3 && net2?.sessions?.["session-aaa"] === 2 && Object.keys(det2).length === 3,
+    net2?.count === 3 && net2?.sessions?.["session-aaa"]?.count === 2 && Object.keys(det2).length === 3,
     JSON.stringify(det2));
+  rmState(file);
+}
+
+// ---------- 场景 16：逐条错误事件（errorEvents：每次一条 + 会话时间排序 + 滚动上限 + 重启保留） ----------
+{
+  console.log("\n== 场景16: 错误事件明细 ==");
+  const file = "test-state-16.json";
+  rmState(file);
+  const ctx = makeCtx();
+  apply(ctx, { maxConcurrency: 5, mode: "queue", history: 10, historyTtlMs: 0, stateFile: file });
+  const emitErr = async (msg, code, sessionId, extra = {}) => {
+    const listeners = [...(ctx._hooks.get("llm/stream") ?? [])];
+    const innerErr = () => (async function* () {
+      yield { type: "finish", reason: { kind: "error", failure: { message: msg, code, ...extra } } };
+    })();
+    const nextErr = () => (listeners.shift() ?? innerErr)({ provider: "p", model: "x", sessionId }, nextErr);
+    await collect(nextErr());
+    await sleep(5);
+  };
+  await emitErr("DeepSeek API error (HTTP 400) (code=INVALID_REQUEST)", "INVALID_REQUEST", "session-aaa", { status: 400, requestId: "req-1" });
+  await emitErr("DeepSeek API error (HTTP 400) (code=INVALID_REQUEST)", "INVALID_REQUEST", "session-aaa", { status: 400, requestId: "req-2" });
+  await emitErr("DeepSeek API error (HTTP 400) (code=INVALID_REQUEST)", "INVALID_REQUEST", "session-bbb", { status: 400, requestId: "req-3" });
+  await emitErr("DeepSeek API request to http://x/v1 failed", "TRANSPORT", null, { status: 0 }); // 无效 status → null
+  const s1 = await waitState(file, (st) => (st.stats?.errorEvents?.length ?? 0) === 4, 3000, "场景16 s1");
+  const ev = s1.stats.errorEvents;
+  check("场景16: 每次错误一条 → 4 条事件", ev.length === 4, `n=${ev.length}`);
+  check("场景16: 事件按时间升序（at 递增）",
+    ev[0].at <= ev[1].at && ev[1].at <= ev[2].at && ev[2].at <= ev[3].at,
+    JSON.stringify(ev.map((e) => e.at)));
+  check("场景16: 事件带会话/分类/错误码/status/requestId",
+    ev[0].sessionId === "session-aaa" && ev[0].kind === "provider" && ev[0].code === "INVALID_REQUEST" &&
+      ev[0].status === 400 && ev[0].requestId === "req-1",
+    JSON.stringify(ev[0]));
+  check("场景16: 无会话事件 sessionId=null、无效 status 归 null",
+    ev[3].sessionId === null && ev[3].status === null && ev[3].kind === "network",
+    JSON.stringify(ev[3]));
+  const det = s1.stats.errorDetails ?? {};
+  const key = Object.keys(det).find((k) => k.includes("INVALID_REQUEST"));
+  check("场景16: sessions 带 lastAt（session-aaa count=2 lastAt≥第二次、session-bbb count=1）",
+    key && det[key].sessions?.["session-aaa"]?.count === 2 &&
+      det[key].sessions?.["session-aaa"]?.lastAt >= ev[1].at &&
+      det[key].sessions?.["session-bbb"]?.count === 1,
+    JSON.stringify(det[key]?.sessions));
+  // 滚动上限：补发 202 条 → 只保留最近 200，最早的事件被挤出
+  for (let i = 0; i < 202; i++) await emitErr("DeepSeek API error (HTTP 503) (code=SERVER)", "SERVER", "session-bbb", { status: 503 });
+  const s2 = await waitState(file, (st) => (st.stats?.errorEvents?.length ?? 0) === 200, 6000, "场景16 cap");
+  check("场景16: 滚动上限 200 条（最早的 INVALID_REQUEST 事件已被挤出）",
+    s2.stats.errorEvents.length === 200 &&
+      s2.stats.errorEvents.every((e) => e.kind === "provider" && e.code === "SERVER"),
+    `n=${s2.stats.errorEvents.length}`);
+  // 重启后事件流保留
+  const ctx2 = makeCtx();
+  apply(ctx2, { maxConcurrency: 5, mode: "queue", history: 10, historyTtlMs: 0, stateFile: file });
+  const svc2 = ctx2.provided.concurrencyGuard;
+  const s3 = svc2.status(true);
+  check("场景16: 重启后 errorEvents 保留（200 条）", s3.stats.errorEvents?.length === 200, `n=${s3.stats.errorEvents?.length}`);
   rmState(file);
 }
 
