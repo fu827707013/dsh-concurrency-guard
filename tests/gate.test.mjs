@@ -451,20 +451,21 @@ function rmState(...paths) { for (const p of paths) { try { rmSync(p, { force: t
   rmState(file);
   const ctx = makeCtx();
   apply(ctx, { maxConcurrency: 5, mode: "queue", history: 10, historyTtlMs: 0, stateFile: file });
-  const emitErr = async (msg, code, sessionId) => {
+  const emitErr = async (msg, code, sessionId, extra = {}) => {
     const listeners = [...(ctx._hooks.get("llm/stream") ?? [])];
     const innerErr = () => (async function* () {
-      yield { type: "finish", reason: { kind: "error", failure: { message: msg, code } } };
+      yield { type: "finish", reason: { kind: "error", failure: { message: msg, code, ...extra } } };
     })();
     const nextErr = () => (listeners.shift() ?? innerErr)({ provider: "p", model: "x", sessionId }, nextErr);
     await collect(nextErr());
   };
   // ① 三次 TRANSPORT（URL 不同）：a/b 两会话各一次 + c 在会话-a 再来一次 → 合并 count=3，会话维度聚合
-  await emitErr("DeepSeek API request to http://a.example/v1 failed", "TRANSPORT", "session-aaa");
+  //    第一次带完整 LlmFailure 字段（status/requestId/retryAfterMs）
+  await emitErr("DeepSeek API request to http://a.example/v1 failed", "TRANSPORT", "session-aaa", { status: 400, requestId: "req-abc-123", providerRetryAfterMs: 1500 });
   await emitErr("DeepSeek API request to http://b.example/v1 failed", "TRANSPORT", "session-bbb");
   await emitErr("DeepSeek API request to http://c.example/v1 failed", "TRANSPORT", "session-aaa");
   // ② 上游错误（会话-c）→ 独立条目
-  await emitErr("provider upstream 502 Bad Gateway", null, "session-ccc");
+  await emitErr("provider upstream 502 Bad Gateway", null, "session-ccc", { status: 502, requestId: "req-502-x" });
   // ③ 无会话错误 → 归入 "(none)"
   await emitErr("user aborted request", null, null);
   const s1 = await waitState(file, (st) => st.stats?.totals?.errored === 5, 3000, "场景15 s1");
@@ -478,6 +479,12 @@ function rmState(...paths) { for (const p of paths) { try { rmSync(p, { force: t
   check("场景15: TRANSPORT 合并 count=3 / kind=network / code=TRANSPORT",
     net && det[net].count === 3 && det[net].kind === "network" && det[net].code === "TRANSPORT",
     JSON.stringify(det[net]));
+  check("场景15: LlmFailure 补充字段已记录（status=400 / requestId / retryAfterMs=1500）",
+    net && det[net].status === 400 && det[net].requestId === "req-abc-123" && det[net].retryAfterMs === 1500,
+    JSON.stringify({ status: det[net]?.status, requestId: det[net]?.requestId, retryAfterMs: det[net]?.retryAfterMs }));
+  check("场景15: provider 错误保留 status=502 / requestId",
+    prov && det[prov].status === 502 && det[prov].requestId === "req-502-x",
+    JSON.stringify({ status: det[prov]?.status, requestId: det[prov]?.requestId }));
   check("场景15: TRANSPORT 的会话维度聚合（session-aaa×2 + session-bbb×1，最近=session-aaa）",
     net && det[net].sessions?.["session-aaa"] === 2 && det[net].sessions?.["session-bbb"] === 1 &&
       det[net].lastSessionId === "session-aaa" && det[net].lastModel === "x",

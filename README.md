@@ -191,6 +191,11 @@ dsh-llm 不可解析时自动降级为纯 sessionId 启发式。
 - **单进程门闩**：多 dsh 实例并行时各自独立计数，请按实例数下调每实例上限；
   状态文件按 `pid` 区分实例。
 - 浏览器侧直连提供商的通道不经宿主 `llm/stream`（本环境无此通道，不受影响）。
+- **错误信息 = DSH 层归一化的 `LlmFailure`**：面板记录的 message/code/HTTP status/
+  requestId/Retry-After 全部来自 DSH `finish` chunk 的 `failure` 字段（协议内最大值）。
+  上游（含中转站）返回的**原始响应体**（如 `{"detail":"上游(maxapi)返回 400: ..."}`）被
+  DSH 适配器保留在错误的 `cause` 里、**llm/stream 协议不透传**——任何挂在此瀑布的插件
+  都拿不到，需 DSH 侧改进（如 `LlmFailure` 增加 `detail` 字段）。
 
 ## 插件商店收录
 
