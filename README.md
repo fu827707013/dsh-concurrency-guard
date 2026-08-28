@@ -197,6 +197,9 @@ dsh-llm 不可解析时自动降级为纯 sessionId 启发式。
   上游（含中转站）返回的**原始响应体**（如 `{"detail":"上游(maxapi)返回 400: ..."}`）被
   DSH 适配器保留在错误的 `cause` 里、**llm/stream 协议不透传**——任何挂在此瀑布的插件
   都拿不到，需 DSH 侧改进（如 `LlmFailure` 增加 `detail` 字段）。
+- **子代理错误无法归并到父会话**：`llm/stream` 只暴露请求自身的 sessionId
+  （主会话 `session-` 前缀 / 子代理裸 UUID），无父级引用；面板以「来源」列区分
+  主会话/子代理/插件。子代理 → 父会话归并需 DSH 透传 `parentSessionId`（可作 feature）。
 
 ## 插件商店收录
 

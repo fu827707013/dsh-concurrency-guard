@@ -495,6 +495,9 @@ function rmState(...paths) { for (const p of paths) { try { rmSync(p, { force: t
   check("场景15: 无会话错误归入 (none) / lastSessionId=null",
     abt && det[abt].sessions?.["(none)"]?.count === 1 && det[abt].lastSessionId === null,
     JSON.stringify(det[abt]));
+  check("场景15: 来源分类已记录（主会话→main，无会话→plugin）",
+    net && det[net].lastSourceKind === "main" && abt && det[abt].lastSourceKind === "plugin",
+    JSON.stringify({ net: det[net]?.lastSourceKind, abt: det[abt]?.lastSourceKind }));
   check("场景15: byErrKind network=3 provider=1 aborted=1",
     s1.stats.totals.byErrKind?.network === 3 && s1.stats.totals.byErrKind?.provider === 1 && s1.stats.totals.byErrKind?.aborted === 1,
     JSON.stringify(s1.stats.totals.byErrKind));
@@ -541,6 +544,9 @@ function rmState(...paths) { for (const p of paths) { try { rmSync(p, { force: t
     ev[0].sessionId === "session-aaa" && ev[0].kind === "provider" && ev[0].code === "INVALID_REQUEST" &&
       ev[0].status === 400 && ev[0].requestId === "req-1",
     JSON.stringify(ev[0]));
+  check("场景16: 事件带来源分类（session-xxx→main，无会话→plugin）",
+    ev[0].sourceKind === "main" && ev[3].sourceKind === "plugin",
+    JSON.stringify(ev.map((e) => e.sourceKind)));
   check("场景16: 无会话事件 sessionId=null、无效 status 归 null",
     ev[3].sessionId === null && ev[3].status === null && ev[3].kind === "network",
     JSON.stringify(ev[3]));
