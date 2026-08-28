@@ -444,5 +444,48 @@ function rmState(...paths) { for (const p of paths) { try { rmSync(p, { force: t
   rmState(file);
 }
 
+// ---------- 场景 15：异常明细聚合（errorDetails 按信息聚类 + 错误码 + 重启保留） ----------
+{
+  console.log("\n== 场景15: 异常明细聚合 ==");
+  const file = "test-state-15.json";
+  rmState(file);
+  const ctx = makeCtx();
+  apply(ctx, { maxConcurrency: 5, mode: "queue", history: 10, historyTtlMs: 0, stateFile: file });
+  const emitErr = async (msg, code) => {
+    const listeners = [...(ctx._hooks.get("llm/stream") ?? [])];
+    const innerErr = () => (async function* () {
+      yield { type: "finish", reason: { kind: "error", failure: { message: msg, code } } };
+    })();
+    const nextErr = () => (listeners.shift() ?? innerErr)({ provider: "p", model: "x" }, nextErr);
+    await collect(nextErr());
+  };
+  // ① 两次 TRANSPORT（仅 URL 不同）→ 归一化后应合并为一条 count=2
+  await emitErr("DeepSeek API request to http://a.example/v1 failed", "TRANSPORT");
+  await emitErr("DeepSeek API request to http://b.example/v1 failed", "TRANSPORT");
+  // ② 一条上游错误 → 独立第二条
+  await emitErr("provider upstream 502 Bad Gateway", null);
+  const s1 = await waitState(file, (st) => st.stats?.totals?.errored === 3, 3000, "场景15 s1");
+  const det = s1.stats.errorDetails ?? {};
+  const keys = Object.keys(det);
+  check("场景15: 3 笔异常 → errored=3", s1.stats.totals.errored === 3, `e=${s1.stats.totals.errored}`);
+  check("场景15: 归一化后聚类为 2 条明细（URL 差异被抹平）", keys.length === 2, `keys=${keys.length} ${JSON.stringify(keys)}`);
+  const net = keys.find((k) => k.includes("<url>"));
+  const prov = keys.find((k) => k.includes("502"));
+  check("场景15: 不同 URL 的 TRANSPORT 合并 count=2 / kind=network / code=TRANSPORT",
+    net && det[net].count === 2 && det[net].kind === "network" && det[net].code === "TRANSPORT",
+    JSON.stringify(det));
+  check("场景15: provider 错误独立一条 count=1 / kind=provider", prov && det[prov].count === 1 && det[prov].kind === "provider", JSON.stringify(det));
+  check("场景15: byErrKind network=2 provider=1", s1.stats.totals.byErrKind?.network === 2 && s1.stats.totals.byErrKind?.provider === 1, JSON.stringify(s1.stats.totals.byErrKind));
+  // ③ 重启后明细跨进程保留
+  const ctx2 = makeCtx();
+  apply(ctx2, { maxConcurrency: 5, mode: "queue", history: 10, historyTtlMs: 0, stateFile: file });
+  const svc2 = ctx2.provided.concurrencyGuard;
+  const s2 = svc2.status(true);
+  const det2 = s2.stats.errorDetails ?? {};
+  const net2 = Object.values(det2).find((d) => d.kind === "network");
+  check("场景15: 重启后 errorDetails 保留（network count=2）", net2?.count === 2 && Object.keys(det2).length === 2, JSON.stringify(det2));
+  rmState(file);
+}
+
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURES`);
 process.exit(failures === 0 ? 0 : 1);
