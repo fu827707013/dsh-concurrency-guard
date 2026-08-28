@@ -418,5 +418,31 @@ function rmState(...paths) { for (const p of paths) { try { rmSync(p, { force: t
   rmState(file);
 }
 
+// ---------- 场景 14：finish/error chunk（不抛异常）→ errored + 分类 ----------
+{
+  console.log("\n== 场景14: finish-error chunk 识别 ==");
+  const file = "test-state-14.json";
+  rmState(file);
+  const ctx = makeCtx();
+  apply(ctx, { maxConcurrency: 5, mode: "queue", history: 10, historyTtlMs: 0, stateFile: file });
+  const listeners = [...(ctx._hooks.get("llm/stream") ?? [])];
+  // dsh 失败语义：错误以 finish chunk（reason.kind=error）正常流出、不抛异常
+  const innerErr = () => (async function* () {
+    yield { type: "finish", reason: { kind: "error", failure: { message: "DeepSeek API request to http://max66.xyz/v1 failed", code: "TRANSPORT" } } };
+  })();
+  const nextErr = () => (listeners.shift() ?? innerErr)({ provider: "p", model: "x" }, nextErr);
+  const r = await collect(nextErr());
+  check("场景14: 错误流正常透传（不 throw）", r.length === 1 && r[0].reason.kind === "error", `chunks=${r.length}`);
+  // 正常一笔对照（重新快照监听器，确保也经过包装器统计）
+  const listeners2 = [...(ctx._hooks.get("llm/stream") ?? [])];
+  const okInner = () => (async function* () { yield { type: "finish", reason: { kind: "done" } }; })();
+  const nextOk = () => (listeners2.shift() ?? okInner)({ provider: "p", model: "y" }, nextOk);
+  await collect(nextOk());
+  const s = await waitState(file, (st) => (st.stats?.today?.errored ?? 0) === 1, 3000, "场景14");
+  check("场景14: error finish chunk 计入 errored=1（completed=1 只含正常笔）", s.stats.today.errored === 1 && s.stats.today.completed === 1, `e=${s.stats.today.errored} c=${s.stats.today.completed}`);
+  check("场景14: 分类为 network（TRANSPORT/request failed）", s.stats.totals.byErrKind?.network === 1, JSON.stringify(s.stats.totals.byErrKind));
+  rmState(file);
+}
+
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURES`);
 process.exit(failures === 0 ? 0 : 1);
