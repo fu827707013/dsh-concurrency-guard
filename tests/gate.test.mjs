@@ -28,6 +28,7 @@ function makeHold() {
 function makeCtx() {
   const hooks = new Map();
   const provided = {};
+  const sessionsStore = new Map(); // id -> { header: { parentSession } }（rootId 解析用）
   const logger = {
     info: (...a) => console.log("  [info]", ...a),
     warn: (...a) => console.log("  [warn]", ...a),
@@ -38,11 +39,13 @@ function makeCtx() {
     logger,
     _hooks: hooks,
     provided,
+    sessionsStore,
     on(name, cb) { (hooks.get(name) ?? hooks.set(name, []).get(name)).push(cb); return () => {}; },
     effect(fn) { const cleanup = fn(); return () => cleanup?.(); },
     get(name) {
       if (name === "webServer") return { register: () => () => {} };
       if (name === "tools") return { register: () => {} };
+      if (name === "sessions") return { get: (id) => sessionsStore.get(id) };
       return undefined;
     },
     provide(name, value) { provided[name] = value; }
@@ -594,6 +597,148 @@ function rmState(...paths) { for (const p of paths) { try { rmSync(p, { force: t
     s2.config.maxConcurrency === 9 && s2.config.warnAt === 2 && s2.config.maxQueueWaitMs === 12345,
     JSON.stringify(s2.config));
   rmState(file);
+}
+
+// ---------- 场景 18：会话级限额 cap=2（全局有空位也按会话排队） ----------
+{
+  console.log("\n== 场景18: 会话级限额 cap=2 ==");
+  const ctx = makeCtx();
+  apply(ctx, { maxConcurrency: 6, mode: "queue", maxQueueWaitMs: 0, stateFile: "test-state-18.json" });
+  const svc = ctx.provided.concurrencyGuard;
+  const r1 = svc.setSessionLimit("session-R", 2, { source: "test" });
+  check("场景18: setSessionLimit 立即生效（sessionLimits 含 cap=2）",
+    r1.sessionLimits.some((l) => l.scopeKey === "session-R" && l.cap === 2),
+    JSON.stringify(r1.sessionLimits));
+  const holds = [];
+  const streams = [];
+  // 前两条（r0/r1）挂 hold 模拟流式中；r2/r3 无 hold（排队后自然完成）
+  for (let i = 0; i < 2; i++) { const h = makeHold(); holds.push(h); streams.push(waterfall(ctx, { provider: "p", model: `r${i}`, sessionId: "session-R" }, h.gate)); }
+  streams.push(waterfall(ctx, { provider: "p", model: "r2", sessionId: "session-R" }));
+  streams.push(waterfall(ctx, { provider: "p", model: "r3", sessionId: "session-R" }));
+  const s2h = makeHold(); holds.push(s2h);
+  streams.push(waterfall(ctx, { provider: "p", model: "s2a", sessionId: "session-S2" }, s2h.gate));
+  streams.push(waterfall(ctx, { provider: "p", model: "s2b", sessionId: "session-S2" }));
+  const results = streams.map((st) => collect(st));
+  const mid = await waitState("test-state-18.json",
+    (s) => s.gauges.active === 3 && s.sessions.some((x) => x.gateKey === "session-R" && x.active === 2 && x.sessionWaiting === 2),
+    3000, "场景18 mid");
+  const rRow = mid.sessions.find((x) => x.gateKey === "session-R");
+  const s2Row = mid.sessions.find((x) => x.gateKey === "session-S2");
+  check("场景18: 会话 R 活跃=2、会话门等待=2（全局有空位也排队）", rRow && rRow.active === 2 && rRow.sessionWaiting === 2, JSON.stringify(rRow));
+  check("场景18: 无限额会话 S2 不受影响（活跃=1）", s2Row && s2Row.active === 1, JSON.stringify(s2Row));
+  check("场景18: 全局门未被 R 撑满（active=3）", mid.gauges.active === 3, `active=${mid.gauges.active}`);
+  for (const h of holds) { h.release(); await sleep(40); }
+  await Promise.all(results);
+  const end = await waitState("test-state-18.json", (s) => s.counters.completed === 6 && s.gauges.active === 0, 3000, "场景18 end");
+  check("场景18: 6 个全部完成", end.counters.completed === 6, `completed=${end.counters.completed}`);
+  check("场景18: sessionGateHeld=2（只有 R 的 2 条排过会话门）", end.counters.sessionGateHeld === 2, `held=${end.counters.sessionGateHeld}`);
+  rmState("test-state-18.json");
+}
+
+// ---------- 场景 19：cap=0 暂停 + 会话门 fail-open ----------
+{
+  console.log("\n== 场景19: cap=0 暂停 + fail-open ==");
+  const ctx = makeCtx();
+  apply(ctx, { maxConcurrency: 5, mode: "queue", maxQueueWaitMs: 150, stateFile: "test-state-19.json" });
+  const svc = ctx.provided.concurrencyGuard;
+  svc.setSessionLimit("session-P", 0, { source: "test" });
+  const r = collect(waterfall(ctx, { provider: "p", model: "x", sessionId: "session-P" }));
+  const s = await waitState("test-state-19.json",
+    (st) => (st.counters.sessionFailOpen ?? 0) >= 1 && (st.stats?.today?.sessionFailOpen ?? 0) >= 1,
+    3000, "场景19 failopen");
+  check("场景19: 暂停会话排队超时 fail-open（sessionFailOpen=1）", s.counters.sessionFailOpen === 1 && s.stats.today.sessionFailOpen === 1, `fo=${s.counters.sessionFailOpen}`);
+  check("场景19: 会话门拦截计数 sessionGateHeld=1", s.counters.sessionGateHeld === 1, `held=${s.counters.sessionGateHeld}`);
+  const chunks = await r;
+  check("场景19: fail-open 后请求正常完成", chunks.length === 1, `chunks=${chunks.length}`);
+  rmState("test-state-19.json");
+}
+
+// ---------- 场景 20：clearSessionLimit 放行排队 ----------
+{
+  console.log("\n== 场景20: clearSessionLimit 放行排队 ==");
+  const ctx = makeCtx();
+  apply(ctx, { maxConcurrency: 5, mode: "queue", maxQueueWaitMs: 0, stateFile: "test-state-20.json" });
+  const svc = ctx.provided.concurrencyGuard;
+  svc.setSessionLimit("session-C", 1, { source: "test" });
+  const hold1 = makeHold();
+  const a = collect(waterfall(ctx, { provider: "p", model: "a", sessionId: "session-C" }, hold1.gate));
+  const b = collect(waterfall(ctx, { provider: "p", model: "b", sessionId: "session-C" }));
+  const mid = await waitState("test-state-20.json",
+    (s) => s.sessions.some((x) => x.gateKey === "session-C" && x.active === 1 && x.sessionWaiting === 1),
+    3000, "场景20 mid");
+  check("场景20: a 活跃 / b 在会话门排队", mid.sessions.find((x) => x.gateKey === "session-C")?.sessionWaiting === 1, JSON.stringify(mid.sessions));
+  svc.clearSessionLimit("session-C");
+  hold1.release();
+  await Promise.all([a, b]);
+  // b 放行后极快完成（无 hold），落盘防抖可能错过 active=2 瞬态 → 以 completed=2 证明已放行
+  const after = await waitState("test-state-20.json",
+    (s) => s.counters.completed === 2 && s.gauges.active === 0 && !s.sessions.some((x) => x.gateKey === "session-C" && x.capped),
+    3000, "场景20 clear");
+  check("场景20: 清除后 b 放行并完成（completed=2，限额消失）", after.counters.completed === 2 && !after.sessions.some((x) => x.gateKey === "session-C" && x.capped), JSON.stringify(after.sessions));
+  check("场景20: 全部完成、无并发位泄漏", after.gauges.active === 0, `active=${after.gauges.active}`);
+  rmState("test-state-20.json");
+}
+
+// ---------- 场景 21：根会话聚合（父链解析：孙→子→根） ----------
+{
+  console.log("\n== 场景21: 根会话聚合 ==");
+  const ctx = makeCtx();
+  ctx.sessionsStore.set("session-R", { header: {} });
+  ctx.sessionsStore.set("sub-1", { header: { parentSession: "session-R" } });
+  ctx.sessionsStore.set("sub-2", { header: { parentSession: "session-R" } });
+  ctx.sessionsStore.set("sub-3", { header: { parentSession: "sub-1" } }); // 孙
+  apply(ctx, { maxConcurrency: 5, mode: "queue", maxQueueWaitMs: 0, stateFile: "test-state-21.json" });
+  const svc = ctx.provided.concurrencyGuard;
+  svc.setSessionLimit("session-R", 1, { source: "test" });
+  const hold1 = makeHold();
+  const a = collect(waterfall(ctx, { provider: "p", model: "a", sessionId: "sub-1" }, hold1.gate));
+  const b = collect(waterfall(ctx, { provider: "p", model: "b", sessionId: "session-R" }));
+  const c = collect(waterfall(ctx, { provider: "p", model: "c", sessionId: "sub-2" }));
+  const d = collect(waterfall(ctx, { provider: "p", model: "d", sessionId: "sub-3" }));
+  const mid = await waitState("test-state-21.json",
+    (s) => s.gauges.active === 1 && s.gauges.waiting === 0 && s.sessions.some((x) => x.gateKey === "session-R" && x.active === 1 && x.sessionWaiting === 3),
+    3000, "场景21 mid");
+  check("场景21: 四条请求（根/子/孙）全部归并到根会话（活跃1 + 会话门等待3）",
+    mid.gauges.active === 1 && mid.gauges.waiting === 0, `a=${mid.gauges.active} w=${mid.gauges.waiting}`);
+  const rRow = mid.sessions.find((x) => x.gateKey === "session-R");
+  check("场景21: 根会话视图聚合 active=1 / sessionWaiting=3",
+    rRow && rRow.active === 1 && rRow.sessionWaiting === 3, JSON.stringify(rRow));
+  check("场景21: 在途记录 gateKey 全部归并为 session-R",
+    mid.activeRequests.length === 4 && mid.activeRequests.every((r) => r.gateKey === "session-R"),
+    JSON.stringify(mid.activeRequests.map((r) => r.gateKey)));
+  hold1.release();
+  await Promise.all([a, b, c, d]);
+  const end = await waitState("test-state-21.json", (s) => s.counters.completed === 4, 3000, "场景21 end");
+  check("场景21: 全部完成", end.counters.completed === 4, `completed=${end.counters.completed}`);
+  rmState("test-state-21.json");
+}
+
+// ---------- 场景 22：等全局门期间 abort → 会话位转移给队首 ----------
+{
+  console.log("\n== 场景22: 全局等待 abort → 会话位转移 ==");
+  const ctx = makeCtx();
+  apply(ctx, { maxConcurrency: 1, mode: "queue", maxQueueWaitMs: 0, stateFile: "test-state-22.json" });
+  const svc = ctx.provided.concurrencyGuard;
+  svc.setSessionLimit("session-T", 2, { source: "test" });
+  const holdA = makeHold();
+  const a = collect(waterfall(ctx, { provider: "p", model: "a", sessionId: "session-T" }, holdA.gate));
+  await sleep(60);
+  const abortB = new AbortController();
+  const b = collect(waterfall(ctx, { provider: "p", model: "b", sessionId: "session-T", signal: abortB.signal }));
+  const c = collect(waterfall(ctx, { provider: "p", model: "c", sessionId: "session-T" }));
+  await sleep(120);
+  abortB.abort();
+  const mid = await waitState("test-state-22.json",
+    (s) => s.counters.cancelled === 1 && s.sessions.some((x) => x.gateKey === "session-T" && x.active === 1 && x.globalWaiting === 1 && x.sessionWaiting === 0),
+    3000, "场景22 mid");
+  const tRow = mid.sessions.find((x) => x.gateKey === "session-T");
+  check("场景22: b 取消后 c 接过会话位并等全局门（active=1, globalWaiting=1, 会话门队列空）",
+    tRow && tRow.active === 1 && tRow.globalWaiting === 1 && tRow.sessionWaiting === 0, JSON.stringify(tRow));
+  holdA.release();
+  await Promise.all([a, c]);
+  const end = await waitState("test-state-22.json", (s) => s.counters.completed === 2 && s.gauges.active === 0, 3000, "场景22 end");
+  check("场景22: a/c 完成、无并发位泄漏（active=0）", end.counters.completed === 2 && end.gauges.active === 0, `completed=${end.counters.completed} active=${end.gauges.active}`);
+  rmState("test-state-22.json");
 }
 
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURES`);

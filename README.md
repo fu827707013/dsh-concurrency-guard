@@ -30,6 +30,21 @@ DSH（DeepSeek Harness）并发请求监控与门闩插件。已发布 npm：`np
 - 🚦 **FIFO 门闩**：默认 `mode=queue, maxConcurrency=5`——并发满员后新请求排队，
   并发**永不超限**；排队中被取消立即出队；排队超时 **fail-open** 强制放行（宁可
   瞬时超限也不卡死请求）。
+- 🎯 **会话级并发控制（v1.5.0+）**：给**在线活跃会话实时设置并发数**——面板新页签
+  「会话并发」/ `POST /api/concurrency-guard/sessions` / `ctx.concurrencyGuard.setSessionLimit()`
+  / 工具 `concurrency_session_set` 四通道热改，无需重启，随 state.json 持久化。
+  - **按顶层会话聚合**：请求的 sessionId 经 `header.parentSession` 父链解析归并到
+    **根会话（rootId）**——限「对话 A」= 主循环 + 其全部子代理 + 压缩/标题共用同一把
+    会话锁；子代理解析不到根时降级按原始 id 生效（面板标注）。
+  - **会话标识**：每行显示「标题（session/title 事件）+ 短会话 id + 工作区目录」
+    三行标识（`sessionQuery.readTitleSnapshots` 后台刷新，缺失降级），一眼认出是哪个会话。
+  - 两道门：请求需同时通过 **会话门（可选）→ 全局门**，固定获取顺序无死锁；
+    会话满员时即使全局有空位也按该会话自己的 FIFO 队列排队。
+  - `cap=0` = **暂停该会话**（全部排队，排队超时仍 fail-open 兜底，不会永久卡死）；
+    降低上限不打断在途请求，只影响后续准入；`clear` 清除后排队请求自动放行回全局门。
+  - 辅助请求（压缩/标题）默认**豁免会话门**（`sessionExemptAuxiliary`，只过全局门），
+    避免书签性请求被会话限流拖死；monitor 模式与 `sessionLimitsEnabled=false` 时
+    会话门整体跳过（限额保留但惰性生效）。
 - 🧹 **历史自动清理**：最近完成记录双保险——条数上限（`history`，默认 30）+
   时间 TTL（`historyTtlMs`，默认 1h，超龄自动清理）；面板「🗑 清历史」一键清空。
 - 📈 **持久化统计**：按天汇总（请求/完成/异常/**中断**/取消/门闩/fail-open）+ **异常分类聚合**
@@ -118,13 +133,22 @@ dev_inject_plugin <克隆目录>           # 需本机装有 dsh-super-injector�
 
 ### 面板内/HTTP 热改
 
-- 面板按钮：切换模式（排队节制/仅监控）、`上限− / 上限+`、`🗑 清历史`；
+- 面板按钮：切换模式（排队节制/仅监控）、`🗑 清历史`；「会话并发」页签每行
+  cap 输入 + 应用 / 暂停 / 恢复 / 清除限额；
 - `POST http://127.0.0.1:3080/api/concurrency-guard/config`，body 如
   `{"mode":"monitor"}`、`{"maxConcurrency":8}`；
 - `POST http://127.0.0.1:3080/api/concurrency-guard/history`，body
   `{"action":"clear"}`（清空历史）或 `{"action":"prune"}`（按 TTL 清理）；
+- `POST http://127.0.0.1:3080/api/concurrency-guard/sessions`，body 如
+  `{"action":"set","sessionId":"session-xxx","cap":2}`（设置/覆盖上限，0=暂停）、
+  `{"action":"pause","sessionId":"..."}`、`{"action":"resume","sessionId":"..."}`、
+  `{"action":"clear","sessionId":"..."}`（清除限额回退全局门）；
+  `GET /status` 返回新增 `sessions`（在线会话并发视图）与 `sessionLimits`；
+- 工具：模型可直接调用 `concurrency_session_list`（只读列出在线会话与限额）与
+  `concurrency_session_set`（实时调整某会话上限/暂停/恢复/清除）；
 - 其它插件：`ctx.concurrencyGuard.configure({...})` / `.status()` / `.reset()` /
-  `.clearHistory()` / `.pruneHistory()`。
+  `.clearHistory()` / `.pruneHistory()` / `.setSessionLimit(id, cap)` /
+  `.clearSessionLimit(id)` / `.resumeSession(id)` / `.sessionStatus()`。
 
 ## 配置
 
@@ -138,6 +162,11 @@ dev_inject_plugin <克隆目录>           # 需本机装有 dsh-super-injector�
 | `DSH_CG_HISTORY` | 30 | 最近完成记录保留条数（硬上限） |
 | `DSH_CG_HISTORY_TTL_MS` | 3600000 | 历史记录时间 TTL ms；`0`=关闭（只靠条数上限） |
 | `DSH_CG_MAX_STREAM_STALL_MS` | 600000 | 流式请求"无输出"判死阈值 ms（弃流兜底记中断；`0`=仅靠提前弃流路径） |
+| `DSH_CG_SESSION_LIMITS_ENABLED` | `true` | 会话级并发控制总开关（false=跳过会话门，限额保留但惰性生效） |
+| `DSH_CG_SESSION_EXEMPT_AUXILIARY` | `true` | 压缩/标题请求豁免会话门（只过全局门） |
+| `DSH_CG_SESSION_LIMIT_TTL_DAYS` | 0 | 会话限额条目自动过期天数（0=永久保留；>0 按未再使用天数清扫） |
+| `DSH_CG_ONLINE_WINDOW_MS` | 600000 | 会话"在线"判定窗口 ms（在途或最近活动落在窗口内即在线） |
+| `DSH_CG_SESSION_TITLE_REFRESH_MS` | 60000 | 会话标题后台刷新周期 ms（惰性接入 ctx.sessionQuery，缺失自动降级） |
 
 优先级：运行时 `configure()` > loader config > 环境变量 > 默认值。
 
@@ -151,11 +180,15 @@ lib/index.js  入口：llm/stream 瀑布监听  conversation.view 槽 →「并�
               finish() 收尾（幂等）      仪表卡/水位条/三张表
 lib/gate.js   FIFO 信号量：转移/abort/   模式切换 + 上限调节 → POST /config
               fail-open（定时器清理）    页面隐藏自动暂停轮询
+              会话门（v1.5.0+）：与全局门同构的按 gateKey 独立 FIFO
 lib/records.js 记录生命周期 + 快照组装（含 byKind/bySession / 历史 TTL 清理）
 lib/stats.js  持久化统计：按天汇总 + 异常分类（重启读回接续）
 lib/classify.js 请求来源分类（main/subagent/plugin/compaction/session-title）
+lib/scope.js  sessionId → 根会话（rootId）父链解析（ctx.sessions 惰性接入 + 缓存降级）
+lib/session-limits.js 会话限额唯一写入口（set/clear/resume/TTL 过期，四通道共用）
 lib/persist.js 状态文件 250ms 防抖写（写盘前顺带 TTL 清理）
-lib/api.js    服务 + HTTP 端点（/status /config /history）+ 工具
+lib/api.js    服务 + HTTP 端点（/status /config /history /sessions）+ 工具
+              （concurrency_status / concurrency_session_list / concurrency_session_set）
 lib/config.js 配置解析（env/config/运行时）
 ```
 
@@ -172,7 +205,9 @@ npm publish --registry https://registry.npmjs.org   # 发布新版（开 2FA 时
 `configure` 热改 / `reset` 清零 / 来源分类 / 历史清空与 TTL / 会话活跃聚合 /
 持久化统计（跨重启接续 + 异常分类计数）/ 中断检测（提前弃流 / 停滞 sweep / 启动遗留对账）/
 finish-error chunk 识别（DSH 不抛异常的请求失败）/ 异常明细聚合（按信息聚类计数 + 错误码 +
-会话上下文聚合 + 重启保留）/ 逐条错误事件（每次一条、会话时间排序、滚动上限、重启保留）。
+会话上下文聚合 + 重启保留）/ 逐条错误事件（每次一条、会话时间排序、滚动上限、重启保留）/
+会话级限额（cap=2 会话排队 / cap=0 暂停 + 会话门 fail-open / clear 放行排队 /
+根会话聚合父链解析 / 等全局门时 abort 会话位转移）。
 
 ## 监控范围（谁会被统计）
 
@@ -201,9 +236,10 @@ dsh-llm 不可解析时自动降级为纯 sessionId 启发式。
   上游（含中转站）返回的**原始响应体**（如 `{"detail":"上游(maxapi)返回 400: ..."}`）被
   DSH 适配器保留在错误的 `cause` 里、**llm/stream 协议不透传**——任何挂在此瀑布的插件
   都拿不到，需 DSH 侧改进（如 `LlmFailure` 增加 `detail` 字段）。
-- **子代理错误无法归并到父会话**：`llm/stream` 只暴露请求自身的 sessionId
-  （主会话 `session-` 前缀 / 子代理裸 UUID），无父级引用；面板以「来源」列区分
-  主会话/子代理/插件。子代理 → 父会话归并需 DSH 透传 `parentSessionId`（可作 feature）。
+- **子代理归并依赖 live session 表**：v1.5.0 起「会话并发」按 `header.parentSession`
+  父链把子代理归并到根会话（限"对话 A"含其全部子代理）。该解析走 `ctx.sessions`
+  live 表（同步、缓存 60s）；子代理已落盘/进程内 driver 未挂 live session 时
+  降级按原始 sessionId 生效（面板标注），不阻断请求。
 
 ## 插件商店收录
 
