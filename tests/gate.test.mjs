@@ -573,5 +573,28 @@ function rmState(...paths) { for (const p of paths) { try { rmSync(p, { force: t
   rmState(file);
 }
 
+// ---------- 场景 17：配置持久化（运行时 configure 重启后继续生效） ----------
+{
+  console.log("\n== 场景17: 配置持久化 ==");
+  const file = "test-state-17.json";
+  rmState(file);
+  const ctx1 = makeCtx();
+  apply(ctx1, { maxConcurrency: 5, mode: "queue", warnAt: 4, stateFile: file });
+  const svc1 = ctx1.provided.concurrencyGuard;
+  svc1.configure({ maxConcurrency: 9, warnAt: 2, maxQueueWaitMs: 12345 });
+  const s1 = await waitState(file, (s) => s.config?.maxConcurrency === 9, 3000, "场景17 s1");
+  check("场景17: configure 立即生效并落盘（max=9 warnAt=2 maxQueueWaitMs=12345）",
+    s1.config.maxConcurrency === 9 && s1.config.warnAt === 2 && s1.config.maxQueueWaitMs === 12345,
+    JSON.stringify(s1.config));
+  // 重启：配置从 state.json 接续（此前 bug：重启丢回默认）
+  const ctx2 = makeCtx();
+  apply(ctx2, { maxConcurrency: 5, mode: "queue", warnAt: 4, stateFile: file });
+  const s2 = ctx2.provided.concurrencyGuard.status(true);
+  check("场景17: 重启后配置保留（max=9 warnAt=2 maxQueueWaitMs=12345）",
+    s2.config.maxConcurrency === 9 && s2.config.warnAt === 2 && s2.config.maxQueueWaitMs === 12345,
+    JSON.stringify(s2.config));
+  rmState(file);
+}
+
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURES`);
 process.exit(failures === 0 ? 0 : 1);
