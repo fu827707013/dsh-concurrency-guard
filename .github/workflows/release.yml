@@ -33,12 +33,15 @@ jobs:
 
   publish-npmjs:
     name: Publish to npmjs
-    # 配置了仓库 Secret NPM_TOKEN 才执行；未配置则跳过（不阻塞 GitHub Packages）
-    if: ${{ secrets.NPM_TOKEN != '' }}
+    # GitHub Actions 限制：secrets 上下文不能用于 jobs.<id>.if，
+    # 先映射到 job 级 env，再在 step 的 if 中判断 env.NPM_TOKEN。
+    # 未配置仓库 Secret NPM_TOKEN 时该 step 跳过，不阻塞 GitHub Packages。
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+    env:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -46,6 +49,7 @@ jobs:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
       - name: Publish
+        if: ${{ env.NPM_TOKEN != '' }}
         run: npm publish --access public
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ env.NPM_TOKEN }}
