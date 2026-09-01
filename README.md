@@ -14,10 +14,15 @@ DSH（DeepSeek Harness）并发请求监控与门闩插件。已发布 npm：`np
 
 ## 效果预览
 
-![并发监控面板](img/demo.png)
+会话视图「并发监控」页签：仪表卡 + 并发水位条 + 页签分组（今日统计 / 异常明细 / 在途与模型 / 会话活跃 / 会话并发 / 最近完成）。
 
-会话视图「并发监控」页签：仪表卡 + 并发水位条 + 在途请求（含来源分类）/ 会话活跃
-/ 分模型 / 最近完成（含历史清理）等一览无余。
+![今日统计与每日历史](img/dashboard-stats.png)
+
+![异常明细双报表](img/error-details.png)
+
+![会话并发——按顶层会话实时设置并发数](img/session-concurrency.png)
+
+![配置弹窗](img/settings.png)
 
 ## 特性
 
@@ -248,7 +253,7 @@ dsh-llm 不可解析时自动降级为纯 sessionId 启发式。
 可在 [插件市场](https://github.com/dsh-market/dsh-market) 与
 [awesome-dsh-plugin.com](https://awesome-dsh-plugin.com) 检索到。
 
-- 截图：本仓库根 `screenshots.json` 声明（`img/demo.png`），推仓库即自动更新，无需再提 PR
+- 截图：本仓库根 `screenshots.json` 声明（`img/session-concurrency.png`），推仓库即自动更新，无需再提 PR
 - 更新条目（描述/分类）：改 `data/plugins/fu827707013__dsh-concurrency-guard.yml`
   后重新生成 READMEs（`npm ci && node scripts/generate-readme.mjs`）再提 PR
 - 提交门槛（CI 自动检查）：仓库创建 ≥ 1 天、提交数 ≥ 10、声明 `dsh.bundle`、
