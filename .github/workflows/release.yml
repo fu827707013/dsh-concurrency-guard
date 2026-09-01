@@ -1,6 +1,8 @@
 name: Publish Package
 
-# 发布 npm 包到 GitHub Packages（并在配置 NPM_TOKEN 后同步发布到 npmjs）。
+# 发布 npm 包：
+#   - GitHub Packages：用 GITHUB_TOKEN 发布 @fu827707013/dsh-concurrency-guard（打 tag 发布 release 时触发）
+#   - npmjs：用 npm Trusted Publisher（OIDC）发布 dsh-concurrency-guard，免 token、免 OTP
 # 触发：GitHub Release 发布（打 tag 发布 release 即触发）或手动 workflow_dispatch。
 on:
   release:
@@ -32,24 +34,21 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   publish-npmjs:
-    name: Publish to npmjs
-    # GitHub Actions 限制：secrets 上下文不能用于 jobs.<id>.if，
-    # 先映射到 job 级 env，再在 step 的 if 中判断 env.NPM_TOKEN。
-    # 未配置仓库 Secret NPM_TOKEN 时该 step 跳过，不阻塞 GitHub Packages。
+    name: Publish to npmjs (OIDC)
+    # npm Trusted Publisher（OIDC）：workflow 必须有 id-token: write，
+    # npm CLI 自动检测 OIDC 环境并换取一次性发布凭证，无需任何 npm token。
+    # 前置：在 npmjs.com 包设置页配置 Trusted Publisher
+    #   （GitHub Actions / fu827707013 / dsh-concurrency-guard / release.yml）。
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
-    env:
-      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+      id-token: write # OIDC 必需
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v7
         with:
-          node-version: '20'
-          registry-url: 'https://registry.npmjs.org'
-      - name: Publish
-        if: ${{ env.NPM_TOKEN != '' }}
-        run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ env.NPM_TOKEN }}
+          # 注意：不设 registry-url —— OIDC 握手由 npm CLI 自动完成，
+          # 显式 .npmrc 认证反而会干扰 trusted publisher 流程。
+          node-version: '24' # 内置 npm >= 11，满足 OIDC/trusted publishing 要求
+      - name: Publish with provenance
+        run: npm publish --provenance --access public
