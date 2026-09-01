@@ -1,0 +1,51 @@
+name: Publish Package
+
+# 发布 npm 包到 GitHub Packages（并在配置 NPM_TOKEN 后同步发布到 npmjs）。
+# 触发：GitHub Release 发布（打 tag 发布 release 即触发）或手动 workflow_dispatch。
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  publish-github-packages:
+    name: Publish to GitHub Packages
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://npm.pkg.github.com'
+          # scope 必须与 GitHub 用户名一致，GitHub npm 注册表不接受无 scope 包名
+          scope: '@fu827707013'
+      - name: Retag as scoped package for GitHub Packages
+        # 只在 CI 里临时把包名改成 @fu827707013/dsh-concurrency-guard，
+        # 不动仓库源码里 npmjs 用的无 scope 包名 dsh-concurrency-guard
+        run: npm pkg set name="@fu827707013/dsh-concurrency-guard"
+      - name: Publish
+        run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-npmjs:
+    name: Publish to npmjs
+    # 配置了仓库 Secret NPM_TOKEN 才执行；未配置则跳过（不阻塞 GitHub Packages）
+    if: ${{ secrets.NPM_TOKEN != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+      - name: Publish
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
